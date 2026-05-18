@@ -80,6 +80,25 @@ body {
     min-height: 100vh;
     min-height: 100dvh;
     overflow: hidden;
+    /* Disable text selection and the iOS long-press callout (copy/translate/share popup).
+       Long-press is reserved for the app's bulk-select gesture, so we don't want
+       the system text-selection UI competing with it. */
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    /* Suppress the gray tap-highlight flash on iOS */
+    -webkit-tap-highlight-color: transparent;
+}
+/* Re-enable selection and the callout for actual text-entry fields so the user
+   can still type, paste, and edit normally. */
+input, textarea, select, [contenteditable="true"] {
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
 }
 
 /* ============================================================
