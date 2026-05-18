@@ -367,6 +367,7 @@ body {
     background: var(--bg-card);
     border-radius: var(--radius-card);
     overflow: hidden;
+    flex-shrink: 0;
 }
 .form-section-header {
     font-size: 13px;
@@ -376,6 +377,7 @@ body {
     color: var(--text-secondary);
     padding: 0 var(--space-l) var(--space-s);
     margin-top: var(--space-l);
+    flex-shrink: 0;
 }
 .form-row {
     display: flex;
@@ -559,7 +561,7 @@ body {
     color: var(--text-secondary);
     padding: var(--space-s) var(--space-l);
 }
-.kbd-spacer { height: 280px; }   /* spacer when keyboard might be up */
+.kbd-spacer { height: 280px; flex-shrink: 0; }   /* spacer when keyboard might be up */
 
 /* ============================================================
    Receipt capture & display
@@ -691,6 +693,7 @@ body {
     opacity: 0.5;
 }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
 <body>
 
@@ -743,28 +746,83 @@ body {
     <div class="scroll-area">
         <div class="nav-bar"><h1 class="nav-title">Reports</h1></div>
         <div class="content">
-            <div class="section-header">Current period</div>
+            <div class="section-header">Quick reports</div>
             <div class="row-group">
-                <div class="row">
+                <div class="row" onclick="generateReport('month')">
                     <div class="row-icon">📅</div>
                     <div class="row-main">
-                        <div class="row-title" id="current-month-label">May 2026</div>
-                        <div class="row-subtitle">Tap to generate when ready</div>
+                        <div class="row-title">Current Month</div>
+                        <div class="row-subtitle" id="quickreport-month">—</div>
+                    </div>
+                    <div class="row-trailing">
+                        <div style="color:var(--radiant-red); font-size:22px">›</div>
                     </div>
                 </div>
-                <div class="row" style="opacity: 0.5">
-                    <div class="row-icon">📄</div>
+                <div class="row" onclick="generateReport('ytd')">
+                    <div class="row-icon">🗓️</div>
                     <div class="row-main">
-                        <div class="row-title">Generate Monthly Report</div>
-                        <div class="row-subtitle">Coming in Milestone 4</div>
+                        <div class="row-title">Year-to-Date</div>
+                        <div class="row-subtitle" id="quickreport-ytd">—</div>
+                    </div>
+                    <div class="row-trailing">
+                        <div style="color:var(--radiant-red); font-size:22px">›</div>
+                    </div>
+                </div>
+                <div class="row" onclick="openCustomRangeSheet()">
+                    <div class="row-icon">📆</div>
+                    <div class="row-main">
+                        <div class="row-title">Custom Range</div>
+                        <div class="row-subtitle">Pick start and end dates</div>
+                    </div>
+                    <div class="row-trailing">
+                        <div style="color:var(--radiant-red); font-size:22px">›</div>
                     </div>
                 </div>
             </div>
-            <div class="form-note" style="margin-top: var(--space-m)">
-                The monthly PDF report will include a category summary, per-trip breakdown,
-                mileage log, and full receipt appendix — ready to email to your CPA.
+
+            <div class="section-header" style="margin-top:var(--space-l)">Past months</div>
+            <div class="row-group" id="past-months-list">
+                <!-- populated by JS -->
+            </div>
+
+            <div class="form-note" style="margin-top:var(--space-m)">
+                Reports include a category summary, per-trip breakdown, mileage log, and a receipt
+                appendix with embedded images. Tap any option to generate a PDF and share it via Mail.
             </div>
         </div>
+    </div>
+</div>
+
+<!-- Custom date range sheet -->
+<div class="sheet" id="sheet-custom-range">
+    <div class="sheet-header">
+        <button class="sheet-btn" onclick="closeSheet()">Cancel</button>
+        <h2 class="sheet-title">Custom Range</h2>
+        <button class="sheet-btn sheet-btn-primary" onclick="generateCustomRangeReport()">Generate</button>
+    </div>
+    <div class="sheet-body">
+        <div class="form-section-header">Date range</div>
+        <div class="form-section">
+            <div class="form-row">
+                <label class="form-label">Start</label>
+                <input class="form-input" id="custom-start" type="date">
+            </div>
+            <div class="form-row">
+                <label class="form-label">End</label>
+                <input class="form-input" id="custom-end" type="date">
+            </div>
+        </div>
+        <div class="form-note">The report will include all expenses, mileage entries, and trips that fall within the selected range (inclusive).</div>
+        <div class="kbd-spacer"></div>
+    </div>
+</div>
+
+<!-- Generation progress overlay -->
+<div class="image-viewer" id="progress-overlay" style="background: rgba(0,0,0,0.85); display:none">
+    <div style="text-align:center; color:white; padding: 0 var(--space-xl)">
+        <div style="font-size:48px; margin-bottom:var(--space-l)">📄</div>
+        <div id="progress-title" style="font-size:20px; font-weight:600; margin-bottom:var(--space-s)">Generating PDF…</div>
+        <div id="progress-detail" style="font-size:15px; opacity:0.8">Preparing report</div>
     </div>
 </div>
 
@@ -1637,7 +1695,8 @@ function switchTab(name) {
     else if (name === 'trips') renderTrips();
     else if (name === 'mileage') renderMileage();
     else if (name === 'reports') {
-        document.getElementById('current-month-label').textContent = monthYear(new Date());
+        renderQuickReportSubtitles();
+        renderPastMonths();
     }
     else if (name === 'settings') {
         refreshStorageStats();
@@ -1949,6 +2008,799 @@ async function clearAllData() {
 }
 
 // ============================================================
+// Reports (PDF generation + email handoff)
+// ============================================================
+// PDF generated via jsPDF (loaded from CDN). Layout uses US Letter
+// (8.5"×11" = 612×792 points at 72 DPI). All measurements in points.
+
+const PDF = {
+    pageW: 612,
+    pageH: 792,
+    margin: 50,
+    contentW: 612 - 50 - 50,   // 512
+    contentH: 792 - 50 - 50,   // 692
+};
+
+function openCustomRangeSheet() {
+    const today = new Date().toISOString().split('T')[0];
+    // Default to first of current month → today
+    const firstOfMonth = new Date();
+    firstOfMonth.setDate(1);
+    document.getElementById('custom-start').value = firstOfMonth.toISOString().split('T')[0];
+    document.getElementById('custom-end').value = today;
+    showSheet('sheet-custom-range');
+}
+
+function generateCustomRangeReport() {
+    const startStr = document.getElementById('custom-start').value;
+    const endStr = document.getElementById('custom-end').value;
+    if (!startStr || !endStr) {
+        return alert('Please pick both start and end dates.');
+    }
+    const start = new Date(startStr + 'T00:00:00');
+    const end   = new Date(endStr   + 'T23:59:59');
+    if (start > end) {
+        return alert('Start date must be before end date.');
+    }
+    closeSheet();
+    // Small delay to let the sheet animation finish before the heavy work
+    setTimeout(() => buildAndShareReport({ start, end, label: customRangeLabel(start, end) }), 250);
+}
+
+function customRangeLabel(start, end) {
+    const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const e = end.toLocaleDateString('en-US',   { month: 'short', day: 'numeric', year: 'numeric' });
+    return `${s} – ${e}`;
+}
+
+function generateReport(kind) {
+    const now = new Date();
+    let start, end, label;
+    if (kind === 'month') {
+        start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
+        end   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+        label = monthYear(now);
+    } else if (kind === 'ytd') {
+        start = new Date(now.getFullYear(), 0, 1, 0, 0, 0);
+        end   = now;
+        label = `${now.getFullYear()} YTD`;
+    } else if (typeof kind === 'object' && kind.year && typeof kind.month === 'number') {
+        // Specific past month (from past-months list)
+        start = new Date(kind.year, kind.month, 1, 0, 0, 0);
+        end   = new Date(kind.year, kind.month + 1, 0, 23, 59, 59);
+        label = monthYear(start);
+    } else {
+        return alert('Unknown report kind');
+    }
+    buildAndShareReport({ start, end, label });
+}
+
+// ============================================================
+// PDF build pipeline
+// ============================================================
+async function buildAndShareReport({ start, end, label }) {
+    showProgress('Generating PDF…', 'Filtering data');
+
+    // Slice the data for the requested range
+    const inRange = (iso) => {
+        const d = new Date(iso);
+        return d >= start && d <= end;
+    };
+    const expenses = store.expenses
+        .filter(e => inRange(e.date))
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+    const mileage = store.mileage
+        .filter(m => inRange(m.date))
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Find trips that have any in-range expense or mileage
+    const tripIdsTouched = new Set([
+        ...expenses.filter(e => e.tripId).map(e => e.tripId),
+        ...mileage.filter(m => m.tripId).map(m => m.tripId),
+    ]);
+    const trips = store.trips.filter(t => tripIdsTouched.has(t.id));
+
+    // Compute totals
+    const totalExpenseAmt = expenses.reduce((s, e) => s + e.amount, 0);
+    const totalMileageAmt = mileage.reduce((s, m) => s + m.miles * m.ratePerMile * (m.roundTrip ? 2 : 1), 0);
+    const totalAmount = totalExpenseAmt + totalMileageAmt;
+
+    // Per-category totals
+    const byCategory = {};
+    for (const e of expenses) {
+        if (!byCategory[e.category]) {
+            byCategory[e.category] = { count: 0, total: 0, deductible: 0 };
+        }
+        const cat = findCategory(e.category);
+        byCategory[e.category].count++;
+        byCategory[e.category].total += e.amount;
+        byCategory[e.category].deductible += e.amount * cat.deduction;
+    }
+    if (mileage.length > 0) {
+        byCategory['Mileage'] = byCategory['Mileage'] || { count: 0, total: 0, deductible: 0 };
+        byCategory['Mileage'].count += mileage.length;
+        byCategory['Mileage'].total += totalMileageAmt;
+        byCategory['Mileage'].deductible += totalMileageAmt;
+    }
+
+    // Sanity check
+    if (expenses.length === 0 && mileage.length === 0) {
+        hideProgress();
+        return alert(`No expenses or mileage entries found in ${label}.`);
+    }
+
+    updateProgress('Loading receipt images', `0 of ${expenses.filter(e => e.receiptKey).length}`);
+
+    // Preload all receipt blobs we'll need
+    const receiptCache = {};
+    const withReceipts = expenses.filter(e => e.receiptKey);
+    for (let i = 0; i < withReceipts.length; i++) {
+        const e = withReceipts[i];
+        try {
+            const rec = await getReceipt(e.receiptKey);
+            if (rec && rec.blob) {
+                receiptCache[e.id] = await blobToDataURL(rec.blob);
+            }
+        } catch (err) { console.error('Receipt load failed:', err); }
+        updateProgress('Loading receipt images', `${i + 1} of ${withReceipts.length}`);
+    }
+
+    updateProgress('Composing pages', 'Cover');
+
+    // Begin PDF
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', compress: true });
+
+    // ============ Page 1: Cover ============
+    drawCoverPage(doc, label, {
+        totalAmount, totalExpenseAmt, totalMileageAmt,
+        expenseCount: expenses.length, mileageCount: mileage.length, tripCount: trips.length,
+        start, end
+    });
+
+    // ============ Page 2: Category summary ============
+    doc.addPage();
+    drawCategorySummaryPage(doc, byCategory, totalAmount);
+
+    // ============ Page 3+: Per-trip breakdown ============
+    if (trips.length > 0) {
+        doc.addPage();
+        drawTripBreakdownPages(doc, trips, expenses, mileage);
+    }
+
+    // ============ Standalone expenses ============
+    const standalone = expenses.filter(e => !e.tripId);
+    if (standalone.length > 0) {
+        doc.addPage();
+        drawStandaloneExpensesPage(doc, standalone);
+    }
+
+    // ============ Mileage log ============
+    if (mileage.length > 0) {
+        doc.addPage();
+        drawMileagePage(doc, mileage, totalMileageAmt);
+    }
+
+    // ============ Receipt appendix ============
+    if (withReceipts.length > 0) {
+        updateProgress('Embedding receipts', `0 of ${withReceipts.length}`);
+        for (let i = 0; i < withReceipts.length; i++) {
+            updateProgress('Embedding receipts', `${i + 1} of ${withReceipts.length}`);
+            doc.addPage();
+            await drawReceiptPage(doc, withReceipts[i], receiptCache[withReceipts[i].id], i + 1, withReceipts.length);
+        }
+    }
+
+    // ============ Footer on every page ============
+    paginateFooters(doc, label);
+
+    updateProgress('Saving', 'Preparing to share');
+
+    // Output blob & share
+    const blob = doc.output('blob');
+    const filename = `QuikXpense_${labelToFilename(label)}.pdf`;
+
+    hideProgress();
+    await sharePDF(blob, filename, label);
+}
+
+function labelToFilename(label) {
+    return label.replace(/\s+/g, '_').replace(/[^\w_-]/g, '');
+}
+
+function blobToDataURL(blob) {
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+    });
+}
+
+// ============================================================
+// PDF page builders
+// ============================================================
+function drawCoverPage(doc, label, totals) {
+    const cx = PDF.pageW / 2;
+
+    // Top accent stripe
+    doc.setFillColor(205, 0, 14);
+    doc.rect(0, 0, PDF.pageW, 12, 'F');
+
+    // Brand block
+    doc.setFontSize(28);
+    doc.setTextColor(46, 52, 64);
+    doc.setFont(undefined, 'bold');
+    doc.text('RADIANT', cx, 130, { align: 'center' });
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(120, 120, 120);
+    doc.text('MEDICAL PHYSICS CONSULTING LLC', cx, 150, { align: 'center' });
+
+    // Report title
+    doc.setFontSize(22);
+    doc.setTextColor(46, 52, 64);
+    doc.setFont(undefined, 'bold');
+    doc.text('Expense Report', cx, 240, { align: 'center' });
+
+    doc.setFontSize(16);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(205, 0, 14);
+    doc.text(label, cx, 268, { align: 'center' });
+
+    // Summary box
+    const boxY = 330;
+    const boxH = 230;
+    doc.setDrawColor(220, 220, 220);
+    doc.setLineWidth(1);
+    doc.roundedRect(PDF.margin + 50, boxY, PDF.contentW - 100, boxH, 8, 8);
+
+    // Big total
+    doc.setFontSize(11);
+    doc.setTextColor(120, 120, 120);
+    doc.text('TOTAL', cx, boxY + 35, { align: 'center' });
+
+    doc.setFontSize(42);
+    doc.setTextColor(46, 52, 64);
+    doc.setFont(undefined, 'bold');
+    doc.text(fmtMoney(totals.totalAmount), cx, boxY + 80, { align: 'center' });
+
+    // Breakdown
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(80, 80, 80);
+    const lines = [
+        `${totals.expenseCount} ${totals.expenseCount === 1 ? 'expense' : 'expenses'}: ${fmtMoney(totals.totalExpenseAmt)}`,
+        `${totals.mileageCount} mileage ${totals.mileageCount === 1 ? 'entry' : 'entries'}: ${fmtMoney(totals.totalMileageAmt)}`,
+        `${totals.tripCount} ${totals.tripCount === 1 ? 'trip' : 'trips'}`,
+    ];
+    let ly = boxY + 120;
+    for (const l of lines) {
+        doc.text(l, cx, ly, { align: 'center' });
+        ly += 18;
+    }
+
+    // Date range / generated
+    doc.setFontSize(10);
+    doc.setTextColor(150, 150, 150);
+    const fmtDate = (d) => d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    doc.text(`Period: ${fmtDate(totals.start)} through ${fmtDate(totals.end)}`, cx, boxY + 195, { align: 'center' });
+    doc.text(`Generated: ${new Date().toLocaleString()}`, cx, boxY + 210, { align: 'center' });
+
+    // Bottom legal/EIN
+    doc.setFontSize(9);
+    doc.setTextColor(150, 150, 150);
+    doc.text('EIN: 42-2512873', cx, PDF.pageH - 70, { align: 'center' });
+    doc.text('Confidential — for tax preparation purposes', cx, PDF.pageH - 56, { align: 'center' });
+}
+
+function drawCategorySummaryPage(doc, byCategory, totalAmount) {
+    drawPageHeader(doc, 'Category Summary');
+
+    // Table header
+    let y = 110;
+    doc.setFillColor(46, 52, 64);
+    doc.rect(PDF.margin, y - 16, PDF.contentW, 22, 'F');
+    doc.setFontSize(10);
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(undefined, 'bold');
+    doc.text('CATEGORY',     PDF.margin + 8,                          y - 1);
+    doc.text('SCHEDULE C',   PDF.margin + 200,                        y - 1);
+    doc.text('#',            PDF.margin + PDF.contentW - 195,         y - 1, { align: 'right' });
+    doc.text('TOTAL',        PDF.margin + PDF.contentW - 100,         y - 1, { align: 'right' });
+    doc.text('DEDUCTIBLE',   PDF.margin + PDF.contentW - 8,           y - 1, { align: 'right' });
+    y += 12;
+
+    // Rows
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(40, 40, 40);
+
+    // Sort by total descending
+    const cats = Object.entries(byCategory).sort((a, b) => b[1].total - a[1].total);
+    let alt = false;
+    let totalDeductible = 0;
+    for (const [cat, data] of cats) {
+        if (alt) {
+            doc.setFillColor(247, 247, 247);
+            doc.rect(PDF.margin, y - 12, PDF.contentW, 20, 'F');
+        }
+        const catObj = findCategory(cat);
+        doc.setTextColor(40, 40, 40);
+        doc.text(cat,                              PDF.margin + 8,                  y + 2);
+        doc.setTextColor(120, 120, 120);
+        doc.setFontSize(8);
+        doc.text(catObj.schedule_c,                PDF.margin + 200,                y + 2);
+        doc.setFontSize(10);
+        doc.setTextColor(40, 40, 40);
+        doc.text(String(data.count),               PDF.margin + PDF.contentW - 195, y + 2, { align: 'right' });
+        doc.text(fmtMoney(data.total),             PDF.margin + PDF.contentW - 100, y + 2, { align: 'right' });
+        doc.text(fmtMoney(data.deductible),        PDF.margin + PDF.contentW - 8,   y + 2, { align: 'right' });
+        totalDeductible += data.deductible;
+        y += 20;
+        alt = !alt;
+    }
+
+    // Totals row
+    y += 4;
+    doc.setDrawColor(46, 52, 64);
+    doc.setLineWidth(1.5);
+    doc.line(PDF.margin, y, PDF.margin + PDF.contentW, y);
+    y += 18;
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(46, 52, 64);
+    doc.text('TOTAL',                              PDF.margin + 8,                  y);
+    doc.text(fmtMoney(totalAmount),                PDF.margin + PDF.contentW - 100, y, { align: 'right' });
+    doc.text(fmtMoney(totalDeductible),            PDF.margin + PDF.contentW - 8,   y, { align: 'right' });
+
+    // Note about meals
+    y += 30;
+    doc.setFont(undefined, 'italic');
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text('Meals are calculated at 50% deductible per IRS guidelines.', PDF.margin, y);
+    y += 12;
+    doc.text('All other categories deduct at 100% of expense amount.', PDF.margin, y);
+}
+
+function drawTripBreakdownPages(doc, trips, allExpenses, allMileage) {
+    let firstPage = true;
+    for (const trip of trips) {
+        if (!firstPage) doc.addPage();
+        firstPage = false;
+        drawPageHeader(doc, `Trip: ${trip.name}`);
+
+        let y = 110;
+        // Trip meta
+        doc.setFontSize(10);
+        doc.setTextColor(120, 120, 120);
+        const dateRange = (() => {
+            const s = new Date(trip.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+            const e = new Date(trip.endDate).toLocaleDateString('en-US',   { month: 'short', day: 'numeric', year: 'numeric' });
+            return s === e ? s : `${s} – ${e}`;
+        })();
+        doc.text(`Client: ${trip.client}`, PDF.margin, y); y += 14;
+        doc.text(`Dates: ${dateRange}`,    PDF.margin, y); y += 14;
+        if (trip.location) { doc.text(`Location: ${trip.location}`, PDF.margin, y); y += 14; }
+        if (trip.purpose)  { doc.text(`Purpose: ${trip.purpose}`,   PDF.margin, y); y += 14; }
+        y += 10;
+
+        // Expenses table
+        const tripExp = allExpenses.filter(e => e.tripId === trip.id);
+        const tripMi  = allMileage.filter(m => m.tripId === trip.id);
+
+        if (tripExp.length > 0) {
+            y = drawExpenseTable(doc, tripExp, y);
+        }
+        if (tripMi.length > 0) {
+            y += 16;
+            doc.setFontSize(11);
+            doc.setFont(undefined, 'bold');
+            doc.setTextColor(46, 52, 64);
+            doc.text('Mileage', PDF.margin, y);
+            y += 12;
+            y = drawMileageTable(doc, tripMi, y);
+        }
+
+        // Trip total
+        const expSum = tripExp.reduce((s, e) => s + e.amount, 0);
+        const miSum  = tripMi.reduce((s, m) => s + m.miles * m.ratePerMile * (m.roundTrip ? 2 : 1), 0);
+        y += 16;
+        doc.setDrawColor(46, 52, 64);
+        doc.setLineWidth(1);
+        doc.line(PDF.margin, y, PDF.margin + PDF.contentW, y);
+        y += 16;
+        doc.setFontSize(11);
+        doc.setFont(undefined, 'bold');
+        doc.setTextColor(46, 52, 64);
+        doc.text('Trip total', PDF.margin, y);
+        doc.text(fmtMoney(expSum + miSum), PDF.margin + PDF.contentW - 8, y, { align: 'right' });
+    }
+}
+
+function drawStandaloneExpensesPage(doc, expenses) {
+    drawPageHeader(doc, 'Other Expenses');
+    doc.setFontSize(10);
+    doc.setTextColor(120, 120, 120);
+    doc.text('Expenses not attached to any trip', PDF.margin, 102);
+
+    let y = 124;
+    y = drawExpenseTable(doc, expenses, y);
+    const total = expenses.reduce((s, e) => s + e.amount, 0);
+    y += 16;
+    doc.setDrawColor(46, 52, 64);
+    doc.setLineWidth(1);
+    doc.line(PDF.margin, y, PDF.margin + PDF.contentW, y);
+    y += 16;
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(46, 52, 64);
+    doc.text('Subtotal', PDF.margin, y);
+    doc.text(fmtMoney(total), PDF.margin + PDF.contentW - 8, y, { align: 'right' });
+}
+
+function drawExpenseTable(doc, expenses, startY) {
+    let y = startY;
+    // Header
+    doc.setFillColor(46, 52, 64);
+    doc.rect(PDF.margin, y, PDF.contentW, 18, 'F');
+    doc.setFontSize(9);
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(undefined, 'bold');
+    doc.text('DATE',     PDF.margin + 6,                            y + 12);
+    doc.text('MERCHANT', PDF.margin + 70,                           y + 12);
+    doc.text('CATEGORY', PDF.margin + 270,                          y + 12);
+    doc.text('AMOUNT',   PDF.margin + PDF.contentW - 6,             y + 12, { align: 'right' });
+    y += 22;
+
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(9);
+    let alt = false;
+    for (const e of expenses) {
+        // Page break check
+        if (y > PDF.pageH - 80) {
+            doc.addPage();
+            drawPageHeader(doc, 'Expenses (continued)');
+            y = 110;
+        }
+        if (alt) {
+            doc.setFillColor(247, 247, 247);
+            doc.rect(PDF.margin, y - 10, PDF.contentW, 18, 'F');
+        }
+        doc.setTextColor(40, 40, 40);
+        const dateStr = new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        doc.text(dateStr,               PDF.margin + 6,   y + 2);
+        const merchant = e.merchant.length > 28 ? e.merchant.slice(0, 27) + '…' : e.merchant;
+        doc.text(merchant,              PDF.margin + 70,  y + 2);
+        const cat = e.category.length > 22 ? e.category.slice(0, 21) + '…' : e.category;
+        doc.setTextColor(120, 120, 120);
+        doc.text(cat,                   PDF.margin + 270, y + 2);
+        doc.setTextColor(40, 40, 40);
+        doc.text(fmtMoney(e.amount),    PDF.margin + PDF.contentW - 6, y + 2, { align: 'right' });
+        y += 18;
+        alt = !alt;
+    }
+    return y;
+}
+
+function drawMileagePage(doc, mileage, totalReimb) {
+    drawPageHeader(doc, 'Mileage Log');
+    doc.setFontSize(10);
+    doc.setTextColor(120, 120, 120);
+    doc.text(`IRS standard rate · ${mileage.length} ${mileage.length === 1 ? 'entry' : 'entries'}`, PDF.margin, 102);
+
+    let y = 124;
+    y = drawMileageTable(doc, mileage, y);
+
+    const totalMiles = mileage.reduce((s, m) => s + m.miles * (m.roundTrip ? 2 : 1), 0);
+    y += 16;
+    doc.setDrawColor(46, 52, 64);
+    doc.setLineWidth(1);
+    doc.line(PDF.margin, y, PDF.margin + PDF.contentW, y);
+    y += 16;
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(46, 52, 64);
+    doc.text('Total miles', PDF.margin, y);
+    doc.text(`${totalMiles.toFixed(1)} mi`, PDF.margin + 200, y);
+    doc.text('Reimbursement', PDF.margin + 320, y);
+    doc.text(fmtMoney(totalReimb), PDF.margin + PDF.contentW - 8, y, { align: 'right' });
+}
+
+function drawMileageTable(doc, mileage, startY) {
+    let y = startY;
+    doc.setFillColor(46, 52, 64);
+    doc.rect(PDF.margin, y, PDF.contentW, 18, 'F');
+    doc.setFontSize(9);
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(undefined, 'bold');
+    doc.text('DATE',    PDF.margin + 6,                     y + 12);
+    doc.text('PURPOSE', PDF.margin + 70,                    y + 12);
+    doc.text('MILES',   PDF.margin + PDF.contentW - 100,    y + 12, { align: 'right' });
+    doc.text('AMOUNT',  PDF.margin + PDF.contentW - 6,      y + 12, { align: 'right' });
+    y += 22;
+
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(9);
+    let alt = false;
+    for (const m of mileage) {
+        if (y > PDF.pageH - 80) {
+            doc.addPage();
+            drawPageHeader(doc, 'Mileage (continued)');
+            y = 110;
+        }
+        if (alt) {
+            doc.setFillColor(247, 247, 247);
+            doc.rect(PDF.margin, y - 10, PDF.contentW, 18, 'F');
+        }
+        const effective = m.miles * (m.roundTrip ? 2 : 1);
+        const reimb = effective * m.ratePerMile;
+        doc.setTextColor(40, 40, 40);
+        const dateStr = new Date(m.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        doc.text(dateStr, PDF.margin + 6, y + 2);
+        let purp = m.purpose + (m.from && m.to ? ` (${m.from} → ${m.to})` : '');
+        if (purp.length > 50) purp = purp.slice(0, 49) + '…';
+        doc.text(purp, PDF.margin + 70, y + 2);
+        doc.text(`${effective.toFixed(1)}${m.roundTrip ? ' (RT)' : ''}`,
+                 PDF.margin + PDF.contentW - 100, y + 2, { align: 'right' });
+        doc.text(fmtMoney(reimb), PDF.margin + PDF.contentW - 6, y + 2, { align: 'right' });
+        y += 18;
+        alt = !alt;
+    }
+    return y;
+}
+
+async function drawReceiptPage(doc, expense, dataUrl, idx, total) {
+    drawPageHeader(doc, `Receipt ${idx} of ${total}`);
+
+    // Expense details box at top
+    let y = 110;
+    const dateStr = new Date(expense.date).toLocaleDateString('en-US',
+        { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' });
+    doc.setFontSize(11);
+    doc.setTextColor(46, 52, 64);
+    doc.setFont(undefined, 'bold');
+    doc.text(expense.merchant, PDF.margin, y);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(80, 80, 80);
+    doc.text(fmtMoney(expense.amount), PDF.margin + PDF.contentW - 8, y, { align: 'right' });
+    y += 16;
+
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text(`${dateStr}  ·  ${expense.category}  ·  ${expense.payment}`, PDF.margin, y);
+    y += 12;
+    if (expense.notes) {
+        const noteText = expense.notes.length > 90 ? expense.notes.slice(0, 89) + '…' : expense.notes;
+        doc.text(noteText, PDF.margin, y);
+        y += 12;
+    }
+
+    y += 8;
+    doc.setDrawColor(220, 220, 220);
+    doc.setLineWidth(0.5);
+    doc.line(PDF.margin, y, PDF.margin + PDF.contentW, y);
+    y += 12;
+
+    // Embed receipt image
+    if (dataUrl) {
+        // Determine the natural dimensions from the data URL
+        const dims = await getImageDimensions(dataUrl);
+        const availH = PDF.pageH - y - 60;   // leave room for footer
+        const availW = PDF.contentW;
+        // Scale to fit
+        const scale = Math.min(availW / dims.w, availH / dims.h);
+        const imgW = dims.w * scale;
+        const imgH = dims.h * scale;
+        const imgX = PDF.margin + (PDF.contentW - imgW) / 2;
+        try {
+            doc.addImage(dataUrl, 'JPEG', imgX, y, imgW, imgH, undefined, 'MEDIUM');
+        } catch (err) {
+            console.error('addImage failed', err);
+            doc.setFontSize(10);
+            doc.setTextColor(200, 80, 80);
+            doc.text('(receipt image could not be embedded)', PDF.margin, y + 20);
+        }
+    } else {
+        doc.setFontSize(10);
+        doc.setTextColor(160, 160, 160);
+        doc.text('(receipt image not available)', PDF.margin, y + 20);
+    }
+}
+
+function getImageDimensions(dataUrl) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+        img.onerror = () => resolve({ w: 1200, h: 1600 });  // fallback
+        img.src = dataUrl;
+    });
+}
+
+function drawPageHeader(doc, title) {
+    // Thin top stripe
+    doc.setFillColor(205, 0, 14);
+    doc.rect(0, 0, PDF.pageW, 4, 'F');
+
+    // Header text
+    doc.setFontSize(9);
+    doc.setTextColor(150, 150, 150);
+    doc.setFont(undefined, 'normal');
+    doc.text('Radiant QuikXpense', PDF.margin, 30);
+
+    // Title
+    doc.setFontSize(18);
+    doc.setTextColor(46, 52, 64);
+    doc.setFont(undefined, 'bold');
+    doc.text(title, PDF.margin, 70);
+
+    // Underline
+    doc.setDrawColor(205, 0, 14);
+    doc.setLineWidth(2);
+    doc.line(PDF.margin, 78, PDF.margin + 60, 78);
+}
+
+function paginateFooters(doc, label) {
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(160, 160, 160);
+        doc.setFont(undefined, 'normal');
+        doc.text(`Page ${i} of ${pageCount}  ·  ${label}  ·  Confidential — for tax preparation`,
+                 PDF.pageW / 2, PDF.pageH - 28, { align: 'center' });
+    }
+}
+
+function fmtMoney(amount) {
+    return '$' + amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+// ============================================================
+// Share / email handoff
+// ============================================================
+async function sharePDF(blob, filename, label) {
+    const recipient = localStorage.getItem('qx.emailSelf') || 'toddbernath2@gmail.com';
+    const subject = `Radiant QuikXpense — ${label}`;
+    const body = `Attached: Radiant Medical Physics Consulting LLC expense report for ${label}.\n\nGenerated by Radiant QuikXpense.`;
+
+    const file = new File([blob], filename, { type: 'application/pdf' });
+
+    // Best path: navigator.share with file. iOS 16+ supports this and shows
+    // the native share sheet with Mail as an option (auto-attaches PDF).
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+            await navigator.share({
+                files: [file],
+                title: subject,
+                text: body,
+            });
+            return;
+        } catch (err) {
+            // User cancellation: AbortError. Anything else, fall through.
+            if (err.name === 'AbortError') return;
+            console.error('share failed, falling back to download:', err);
+        }
+    }
+
+    // Fallback: download the PDF, then open Mail with subject prefilled.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+    // After download, offer to open Mail composer (without attachment, since mailto:
+    // can't carry attachments). User then attaches the downloaded PDF manually.
+    setTimeout(() => {
+        if (confirm('PDF downloaded. Open Mail to send it?')) {
+            const mailto = `mailto:${encodeURIComponent(recipient)}` +
+                           `?subject=${encodeURIComponent(subject)}` +
+                           `&body=${encodeURIComponent(body + '\n\n(Attach the downloaded PDF.)')}`;
+            window.location.href = mailto;
+        }
+    }, 300);
+}
+
+// ============================================================
+// Past months list
+// ============================================================
+function renderPastMonths() {
+    const list = document.getElementById('past-months-list');
+    if (!list) return;
+    // Find unique months from expenses + mileage, sort descending, drop the current month
+    const months = new Set();
+    const now = new Date();
+    const thisKey = `${now.getFullYear()}-${now.getMonth()}`;
+    for (const e of store.expenses) {
+        const d = new Date(e.date);
+        const k = `${d.getFullYear()}-${d.getMonth()}`;
+        if (k !== thisKey) months.add(k);
+    }
+    for (const m of store.mileage) {
+        const d = new Date(m.date);
+        const k = `${d.getFullYear()}-${d.getMonth()}`;
+        if (k !== thisKey) months.add(k);
+    }
+
+    const sorted = [...months].map(k => {
+        const [y, m] = k.split('-').map(Number);
+        return { year: y, month: m };
+    }).sort((a, b) => (b.year - a.year) * 100 + (b.month - a.month));
+
+    if (sorted.length === 0) {
+        list.innerHTML = `<div class="row" style="opacity:0.5"><div class="row-main"><div class="row-subtitle">No prior months yet</div></div></div>`;
+        return;
+    }
+
+    let html = '';
+    for (const { year, month } of sorted.slice(0, 24)) {
+        const d = new Date(year, month, 1);
+        const label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        const monthExp = store.expenses.filter(e => {
+            const ed = new Date(e.date);
+            return ed.getFullYear() === year && ed.getMonth() === month;
+        });
+        const monthMi = store.mileage.filter(mi => {
+            const md = new Date(mi.date);
+            return md.getFullYear() === year && md.getMonth() === month;
+        });
+        const total = monthExp.reduce((s, e) => s + e.amount, 0)
+                    + monthMi.reduce((s, mi) => s + mi.miles * mi.ratePerMile * (mi.roundTrip ? 2 : 1), 0);
+        html += `
+            <div class="row" onclick='generateReport(${JSON.stringify({ year, month })})'>
+                <div class="row-icon">📄</div>
+                <div class="row-main">
+                    <div class="row-title">${label}</div>
+                    <div class="row-subtitle">${monthExp.length} ${monthExp.length === 1 ? 'expense' : 'expenses'}, ${monthMi.length} mileage</div>
+                </div>
+                <div class="row-trailing">
+                    <div class="amount-mono" style="font-size:15px; color:var(--text-secondary)">${fmt(total)}</div>
+                </div>
+            </div>
+        `;
+    }
+    list.innerHTML = html;
+}
+
+function renderQuickReportSubtitles() {
+    const now = new Date();
+    const monthExp = store.expenses.filter(e => isThisMonth(e.date));
+    const monthMi = store.mileage.filter(mi => isThisMonth(mi.date));
+    const monthTotal = monthExp.reduce((s, e) => s + e.amount, 0)
+                     + monthMi.reduce((s, mi) => s + mi.miles * mi.ratePerMile * (mi.roundTrip ? 2 : 1), 0);
+    const ytdExp = store.expenses.filter(e => new Date(e.date).getFullYear() === now.getFullYear());
+    const ytdMi = store.mileage.filter(mi => new Date(mi.date).getFullYear() === now.getFullYear());
+    const ytdTotal = ytdExp.reduce((s, e) => s + e.amount, 0)
+                   + ytdMi.reduce((s, mi) => s + mi.miles * mi.ratePerMile * (mi.roundTrip ? 2 : 1), 0);
+
+    const monthEl = document.getElementById('quickreport-month');
+    const ytdEl = document.getElementById('quickreport-ytd');
+    if (monthEl) monthEl.textContent = `${monthYear(now)}  ·  ${fmt(monthTotal)}  ·  ${monthExp.length + monthMi.length} entries`;
+    if (ytdEl)   ytdEl.textContent   = `${now.getFullYear()}  ·  ${fmt(ytdTotal)}  ·  ${ytdExp.length + ytdMi.length} entries`;
+}
+
+// ============================================================
+// Progress overlay
+// ============================================================
+function showProgress(title, detail) {
+    document.getElementById('progress-title').textContent = title;
+    document.getElementById('progress-detail').textContent = detail || '';
+    document.getElementById('progress-overlay').style.display = 'flex';
+}
+function updateProgress(title, detail) {
+    document.getElementById('progress-title').textContent = title;
+    document.getElementById('progress-detail').textContent = detail || '';
+}
+function hideProgress() {
+    document.getElementById('progress-overlay').style.display = 'none';
+}
+
+// ============================================================
 // Wire up listeners
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
@@ -1965,14 +2817,23 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('mi-roundtrip').addEventListener('change', updateMileageReimb);
 
     // Email & toggle persistence
+    // Default to Todd's email if user hasn't customized. Hard-coded fallback
+    // ensures the address comes back even if browser storage gets cleared.
+    const DEFAULT_EMAIL_SELF = 'toddbernath2@gmail.com';
     const emailSelf = document.getElementById('email-self');
     const emailCpa = document.getElementById('email-cpa');
     const autoCat = document.getElementById('auto-category');
-    emailSelf.value = localStorage.getItem('qx.emailSelf') || '';
+    emailSelf.value = localStorage.getItem('qx.emailSelf') || DEFAULT_EMAIL_SELF;
+    // Persist the default into storage on first load so the rest of the
+    // app's "to recipient" logic always finds a value
+    if (!localStorage.getItem('qx.emailSelf')) {
+        localStorage.setItem('qx.emailSelf', DEFAULT_EMAIL_SELF);
+    }
     emailCpa.value = localStorage.getItem('qx.emailCpa') || '';
     autoCat.checked = localStorage.getItem('qx.autoCat') !== 'false';
-    emailSelf.addEventListener('change', () => localStorage.setItem('qx.emailSelf', emailSelf.value));
-    emailCpa.addEventListener('change', () => localStorage.setItem('qx.emailCpa', emailCpa.value));
+    // Save on every keystroke (not just on blur) so partial typing isn't lost
+    emailSelf.addEventListener('input', () => localStorage.setItem('qx.emailSelf', emailSelf.value));
+    emailCpa.addEventListener('input', () => localStorage.setItem('qx.emailCpa', emailCpa.value));
     autoCat.addEventListener('change', () => localStorage.setItem('qx.autoCat', autoCat.checked));
 
     renderToday();
