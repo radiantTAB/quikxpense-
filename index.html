@@ -217,6 +217,9 @@ body {
 .trip-row.selected {
     background: rgba(205, 0, 14, 0.06);
 }
+.mileage-row.selected {
+    background: rgba(205, 0, 14, 0.06);
+}
 
 /* ============================================================
    Cards & rows
@@ -436,14 +439,6 @@ body {
     font-size: 17px;
     color: var(--text-primary);
     flex-shrink: 0;
-}
-.form-value {
-    flex: 1;
-    font-size: 17px;
-    color: var(--text-secondary);
-    text-align: right;
-    min-width: 0;
-    word-break: break-word;
 }
 .form-input {
     flex: 1;
@@ -960,6 +955,16 @@ body {
                 </div>
             </div>
 
+            <div class="section-header">Payment Methods</div>
+            <div class="row-group">
+                <div id="payment-methods-list"></div>
+                <div class="form-row" style="display:flex; gap:8px; padding:var(--space-m)">
+                    <input class="form-input" id="new-payment-method" placeholder="Add payment method (e.g., Amazon)" style="text-align:left; flex:1">
+                    <button class="sheet-btn sheet-btn-primary" onclick="addPaymentMethod()" style="padding:0 var(--space-m)">Add</button>
+                </div>
+                <div class="form-note" style="padding:0 var(--space-m) var(--space-m)">Built-in methods (Radiant Card, Personal Card, Cash, Check, Other) can't be removed.</div>
+            </div>
+
             <div class="section-header">About</div>
             <div class="row-group">
                 <div class="settings-row">
@@ -1037,7 +1042,6 @@ body {
     <div class="sheet-header">
         <button class="sheet-btn" onclick="closeSheet()">Cancel</button>
         <h2 class="sheet-title">New Expense</h2>
-        <!-- Save lives at the bottom of the form -->
         <div style="width:52px"></div>
     </div>
     <div class="sheet-body">
@@ -1093,6 +1097,7 @@ body {
         <input type="file" id="receipt-library-input" accept="image/*"
                style="display:none" onchange="handleReceiptFile(event)">
 
+        <!-- Single save button for new expense -->
         <div class="form-actions">
             <button class="save-primary-btn" id="save-primary-btn" onclick="saveNewExpense()">Save expense</button>
         </div>
@@ -1108,8 +1113,9 @@ body {
         <h2 class="sheet-title">Expense Details</h2>
         <div style="width:52px"></div>
     </div>
-    <div class="sheet-body" id="view-expense-body">
-        <!-- Populated dynamically when opened -->
+    <div class="sheet-body">
+        <div id="view-expense-body"></div>
+        <div class="kbd-spacer"></div>
     </div>
 </div>
 
@@ -1239,7 +1245,28 @@ const CATEGORIES = [
     { key: 'Phone/Internet', icon: '📶', schedule_c: '25 — Utilities', deduction: 1.0 },
     { key: 'Other', icon: '⋯', schedule_c: '27a — Other', deduction: 1.0 },
 ];
-const PAYMENT_METHODS = ['Radiant Card', 'Personal Card', 'Cash', 'Check', 'Other'];
+// Built-in payment methods. The user can add more in Settings; custom ones are
+// stored in localStorage and merged in via getPaymentMethods().
+const DEFAULT_PAYMENT_METHODS = ['Radiant Card', 'Personal Card', 'Cash', 'Check', 'Other'];
+const CUSTOM_PAYMENT_KEY = 'qx.customPaymentMethods';
+
+function getCustomPaymentMethods() {
+    try {
+        const raw = localStorage.getItem(CUSTOM_PAYMENT_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr.filter(s => typeof s === 'string' && s.trim()) : [];
+    } catch { return []; }
+}
+function saveCustomPaymentMethods(arr) {
+    localStorage.setItem(CUSTOM_PAYMENT_KEY, JSON.stringify(arr));
+}
+function getPaymentMethods() {
+    // Insert custom methods before "Other" so it stays the last option
+    const custom = getCustomPaymentMethods();
+    const result = ['Radiant Card', 'Personal Card', 'Cash', 'Check', ...custom, 'Other'];
+    return result;
+}
 const CLIENTS = ['One Physics', 'Dayton Physicians', 'Kettering Health', 'Personal', 'Other'];
 
 const CATEGORY_SUGGESTIONS = [
@@ -1345,6 +1372,7 @@ function seedData() {
 
 let store = loadStore();
 let editingExpenseId = null;
+let viewingExpenseId = null;
 // Holds the receipt blob being staged in the expense form. When the user
 // taps "Save", we commit this to IndexedDB keyed by the expense ID.
 // When the user attaches a new photo, the OLD receipt key (if any) is
@@ -1736,13 +1764,19 @@ function cancelLongPress() {
     }
 }
 
+function renderSelectionTab() {
+    // Re-render whichever tab the current selection mode is anchored to
+    if (selectionMode === 'trips') renderTrips();
+    else if (selectionMode === 'mileage') renderMileage();
+    else renderToday();
+}
+
 function enterSelectionMode(initialId, ev, mode) {
     if (ev) { ev.preventDefault(); ev.stopPropagation(); }
     selectionMode = mode || 'expenses';
     selectedIds = new Set();
     if (initialId) selectedIds.add(initialId);
-    if (selectionMode === 'trips') renderTrips();
-    else renderToday();
+    renderSelectionTab();
     showBulkBar();
     const fab = document.getElementById('fab');
     if (fab) fab.style.display = 'none';
@@ -1753,6 +1787,7 @@ function exitSelectionMode() {
     selectionMode = false;
     selectedIds = new Set();
     if (wasMode === 'trips') renderTrips();
+    else if (wasMode === 'mileage') renderMileage();
     else renderToday();
     hideBulkBar();
     // Show the FAB again only if we're on the Today tab
@@ -1770,8 +1805,7 @@ function toggleSelection(id, ev) {
     if (selectedIds.size === 0) {
         exitSelectionMode();
     } else {
-        if (selectionMode === 'trips') renderTrips();
-        else renderToday();
+        renderSelectionTab();
         updateBulkBar();
     }
 }
@@ -1795,7 +1829,10 @@ function updateBulkBar() {
     const bar = document.getElementById('bulk-bar');
     if (!bar) return;
     const n = selectedIds.size;
-    const noun = selectionMode === 'trips' ? (n === 1 ? 'trip' : 'trips') : (n === 1 ? 'expense' : 'expenses');
+    let noun;
+    if (selectionMode === 'trips') noun = (n === 1 ? 'trip' : 'trips');
+    else if (selectionMode === 'mileage') noun = (n === 1 ? 'mileage entry' : 'mileage entries');
+    else noun = (n === 1 ? 'expense' : 'expenses');
     bar.innerHTML = `
         <button class="bulk-btn bulk-btn-cancel" onclick="exitSelectionMode()">Cancel</button>
         <div class="bulk-count">${n} ${noun} selected</div>
@@ -1806,15 +1843,19 @@ function updateBulkBar() {
 async function confirmBulkDelete() {
     const n = selectedIds.size;
     if (n === 0) return;
-    const itemNoun = selectionMode === 'trips' ? (n === 1 ? 'trip' : 'trips') : (n === 1 ? 'expense' : 'expenses');
-    const extra = selectionMode === 'trips'
-        ? ' Expenses and mileage assigned to deleted trips will be kept but unassigned.'
-        : '';
+    let itemNoun, extra = '';
+    if (selectionMode === 'trips') {
+        itemNoun = (n === 1 ? 'trip' : 'trips');
+        extra = ' Expenses and mileage assigned to deleted trips will be kept but unassigned.';
+    } else if (selectionMode === 'mileage') {
+        itemNoun = (n === 1 ? 'mileage entry' : 'mileage entries');
+    } else {
+        itemNoun = (n === 1 ? 'expense' : 'expenses');
+    }
     if (!confirm(`Delete ${n === 1 ? 'this' : `these ${n}`} ${itemNoun}? This cannot be undone.${extra}`)) return;
     const ids = [...selectedIds];
     if (selectionMode === 'trips') {
         for (const id of ids) {
-            // Unassign any expenses/mileage tied to this trip (don't delete them)
             for (const e of store.expenses) {
                 if (e.tripId === id) e.tripId = null;
             }
@@ -1822,6 +1863,10 @@ async function confirmBulkDelete() {
                 if (m.tripId === id) m.tripId = null;
             }
             store.trips = store.trips.filter(t => t.id !== id);
+        }
+    } else if (selectionMode === 'mileage') {
+        for (const id of ids) {
+            store.mileage = store.mileage.filter(m => m.id !== id);
         }
     } else {
         for (const id of ids) {
@@ -1919,9 +1964,17 @@ function renderMileage() {
         `;
         for (const m of entries) {
             const reimb = m.miles * m.ratePerMile * (m.roundTrip ? 2 : 1);
+            const inSelMode = selectionMode === 'mileage';
+            const isSelected = selectedIds.has(m.id);
+            const leadCell = inSelMode
+                ? `<div class="row-icon" style="background:${isSelected ? 'var(--radiant-red)' : 'transparent'}; border:2px solid ${isSelected ? 'var(--radiant-red)' : 'var(--separator)'}; color:white; font-size:16px; font-weight:700; display:flex; align-items:center; justify-content:center">${isSelected ? '✓' : ''}</div>`
+                : `<div class="row-icon">🛣️</div>`;
+            const tapHandler = inSelMode
+                ? `onclick="toggleSelection('${m.id}', event)"`
+                : `ontouchstart="startLongPress('${m.id}', event, 'mileage')" ontouchend="cancelLongPress(event)" ontouchmove="cancelLongPress(event)" oncontextmenu="enterSelectionMode('${m.id}', event, 'mileage'); return false;"`;
             html += `
-                <div class="row">
-                    <div class="row-icon">🛣️</div>
+                <div class="row mileage-row${isSelected ? ' selected' : ''}" ${tapHandler}>
+                    ${leadCell}
                     <div class="row-main">
                         <div class="row-title">${escapeHtml(m.purpose || '(no purpose)')}</div>
                         <div class="row-subtitle">${escapeHtml(m.from)} → ${escapeHtml(m.to)}</div>
@@ -1952,7 +2005,8 @@ function switchTab(name) {
     // Exit selection mode when navigating away from its source tab
     if (selectionMode) {
         const onSourceTab = (selectionMode === 'expenses' && name === 'today')
-                         || (selectionMode === 'trips' && name === 'trips');
+                         || (selectionMode === 'trips' && name === 'trips')
+                         || (selectionMode === 'mileage' && name === 'mileage');
         if (!onSourceTab) {
             exitSelectionMode();
         }
@@ -1998,6 +2052,74 @@ async function refreshStorageStats() {
         console.error('Storage stats failed:', err);
         document.getElementById('storage-detail').textContent = 'Unable to calculate';
     }
+    // Also refresh the payment methods list while we're on Settings tab
+    renderPaymentMethodsList();
+}
+
+// ===== Payment methods management (Settings) =====
+function renderPaymentMethodsList() {
+    const container = document.getElementById('payment-methods-list');
+    if (!container) return;
+    const custom = getCustomPaymentMethods();
+    let html = '';
+    // Show built-in methods (not deletable)
+    const builtIn = ['Radiant Card', 'Personal Card', 'Cash', 'Check', 'Other'];
+    for (const name of builtIn) {
+        html += `
+            <div class="settings-row">
+                <div class="settings-label">${escapeHtml(name)}</div>
+                <div class="settings-value" style="color:var(--text-secondary); font-size:13px">Built-in</div>
+            </div>
+        `;
+    }
+    // Show custom methods with a delete button
+    for (let i = 0; i < custom.length; i++) {
+        const name = custom[i];
+        html += `
+            <div class="settings-row">
+                <div class="settings-label">${escapeHtml(name)}</div>
+                <button class="sheet-btn" style="color:#FF3B30; padding:0 var(--space-m)" onclick="removePaymentMethod(${i})">Remove</button>
+            </div>
+        `;
+    }
+    container.innerHTML = html;
+}
+
+function addPaymentMethod() {
+    const input = document.getElementById('new-payment-method');
+    const name = input.value.trim();
+    if (!name) return;
+    // Don't allow duplicates of built-in or existing custom
+    const all = getPaymentMethods();
+    if (all.some(m => m.toLowerCase() === name.toLowerCase())) {
+        alert('That payment method already exists.');
+        return;
+    }
+    if (name.length > 40) {
+        alert('Payment method name is too long (max 40 characters).');
+        return;
+    }
+    const custom = getCustomPaymentMethods();
+    custom.push(name);
+    saveCustomPaymentMethods(custom);
+    input.value = '';
+    renderPaymentMethodsList();
+}
+
+function removePaymentMethod(index) {
+    const custom = getCustomPaymentMethods();
+    if (index < 0 || index >= custom.length) return;
+    const name = custom[index];
+    // Check if any existing expenses use this method
+    const usingCount = store.expenses.filter(e => e.payment === name).length;
+    let msg = `Remove "${name}" from payment methods?`;
+    if (usingCount > 0) {
+        msg += `\n\n${usingCount} existing ${usingCount === 1 ? 'expense uses' : 'expenses use'} this method. They will keep showing "${name}" but the option won't appear for new expenses.`;
+    }
+    if (!confirm(msg)) return;
+    custom.splice(index, 1);
+    saveCustomPaymentMethods(custom);
+    renderPaymentMethodsList();
 }
 
 // ============================================================
@@ -2016,7 +2138,7 @@ function populateSelect(sel, items, valueGetter = (i) => i, labelGetter = (i) =>
 }
 
 function openSheet(name) {
-    if (name === 'new-expense') openExpenseSheet(null);
+    if (name === 'new-expense') openExpenseSheet();
     else if (name === 'new-trip') openTripSheet();
     else if (name === 'new-mileage') openMileageSheet();
 }
@@ -2034,19 +2156,15 @@ function closeSheet() {
     }
     currentSheet = null;
     editingExpenseId = null;
-    // Clear all three editing-state stamps
-    const sheetEl = document.getElementById('sheet-new-expense');
-    if (sheetEl) sheetEl.dataset.editingId = '';
-    const hiddenInput = document.getElementById('exp-editing-id');
-    if (hiddenInput) hiddenInput.value = '';
+    viewingExpenseId = null;
     resetReceiptState();
 }
 
 function openExpenseSheet() {
-    // New expense only — no editing path.
+    // Always for NEW expenses. The view sheet handles existing ones.
     resetReceiptState();
     populateSelect(document.getElementById('exp-category'), CATEGORIES, c => c.key, c => `${c.icon}  ${c.key}`);
-    populateSelect(document.getElementById('exp-payment'), PAYMENT_METHODS);
+    populateSelect(document.getElementById('exp-payment'), getPaymentMethods());
     const tripSel = document.getElementById('exp-trip');
     tripSel.innerHTML = '<option value="">None</option>';
     for (const t of store.trips) {
@@ -2067,79 +2185,107 @@ function openExpenseSheet() {
     setTimeout(() => document.getElementById('exp-amount').focus(), 350);
 }
 
-// View an existing expense in read-only mode. Tapping a row calls this.
-// To "edit" an expense, the user deletes it and creates a new one.
-let viewingExpenseId = null;
-function viewExpense(id) {
+// ===== Read-only view of an existing expense =====
+// Tapping an expense row opens this details sheet. There's no edit mode —
+// if something is wrong, the user deletes the expense and creates a new one.
+// This deliberately eliminates the entire class of "save edit created duplicate"
+// bugs because there's no save-edit code path at all.
+
+async function viewExpense(id) {
     const e = store.expenses.find(x => x.id === id);
     if (!e) return;
     viewingExpenseId = id;
-    const cat = findCategory(e.category);
-    const tripName = e.tripId ? (store.trips.find(t => t.id === e.tripId)?.name || '—') : '—';
-    const dateStr = new Date(e.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 
-    const body = document.getElementById('view-expense-body');
-    body.innerHTML = `
-        <div class="form-section" style="padding-top: var(--space-l); padding-bottom: var(--space-l); text-align:center">
-            <div style="font-size: 13px; color: var(--text-secondary); letter-spacing: 0.5px; text-transform: uppercase">
-                ${cat.icon} ${escapeHtml(cat.key)}
-            </div>
-            <div style="font-size: 44px; font-weight: 700; color: var(--text-primary); margin-top: var(--space-s)">
+    const cat = findCategory(e.category);
+    const tripName = e.tripId ? (store.trips.find(t => t.id === e.tripId) || {}).name : null;
+    const formattedDate = new Date(e.date).toLocaleDateString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric', year: 'numeric'
+    });
+
+    let bodyHtml = `
+        <div class="form-section" style="text-align:center; padding: var(--space-l)">
+            <div style="font-size:42px; font-weight:600; color:var(--radiant-red); font-family:var(--mono-font)">
                 ${fmt(e.amount)}
             </div>
-            <div style="font-size: 17px; font-weight: 600; color: var(--text-primary); margin-top: var(--space-xs)">
-                ${escapeHtml(e.merchant || '(no merchant)')}
+            <div style="font-size:16px; color:var(--text-secondary); margin-top:8px">
+                ${cat.icon}  ${escapeHtml(cat.key)}
             </div>
-            <div style="font-size: 13px; color: var(--text-secondary); margin-top: 2px">
-                ${dateStr}
+            <div style="font-size:18px; margin-top:12px; font-weight:500">
+                ${escapeHtml(e.merchant)}
+            </div>
+            <div style="font-size:14px; color:var(--text-secondary); margin-top:4px">
+                ${formattedDate}
             </div>
         </div>
 
         <div class="form-section-header">Details</div>
         <div class="form-section">
-            <div class="form-row"><label class="form-label">Payment</label><div class="form-value">${escapeHtml(e.payment || '—')}</div></div>
-            <div class="form-row"><label class="form-label">Trip</label><div class="form-value">${escapeHtml(tripName)}</div></div>
-        </div>
-
-        ${e.notes ? `
-            <div class="form-section-header">Notes</div>
-            <div class="form-section">
-                <div class="form-row" style="padding: var(--space-m); display:block">
-                    <div class="form-value" style="white-space:pre-wrap; text-align:left">${escapeHtml(e.notes)}</div>
+            <div class="row" style="padding: var(--space-m)">
+                <div class="row-main">
+                    <div class="row-subtitle">Payment</div>
+                    <div class="row-title" style="font-size:15px">${escapeHtml(e.payment || '—')}</div>
                 </div>
             </div>
-        ` : ''}
-
-        <div class="form-section-header">Receipt</div>
-        <div class="form-section" id="view-receipt-section" style="padding: var(--space-m)">
-            ${e.receiptKey ? '<div style="color:var(--text-secondary); text-align:center">Loading…</div>' : '<div style="color:var(--text-secondary); text-align:center; padding: var(--space-l) 0">No receipt attached</div>'}
-        </div>
-
-        <div class="form-actions">
-            <button class="delete-btn" onclick="deleteViewedExpense()">Delete expense</button>
-            <div style="text-align:center; font-size:12px; color:var(--text-secondary); margin-top: var(--space-s); padding: 0 var(--space-l)">
-                To change anything, delete this expense and add a new one.
+            <div class="row" style="padding: var(--space-m)">
+                <div class="row-main">
+                    <div class="row-subtitle">Trip</div>
+                    <div class="row-title" style="font-size:15px">${tripName ? escapeHtml(tripName) : '—'}</div>
+                </div>
             </div>
         </div>
-
-        <div class="kbd-spacer"></div>
     `;
+
+    if (e.notes && e.notes.trim()) {
+        bodyHtml += `
+            <div class="form-section-header">Notes</div>
+            <div class="form-section">
+                <div style="padding: var(--space-m); font-size:15px; white-space:pre-wrap">${escapeHtml(e.notes)}</div>
+            </div>
+        `;
+    }
+
+    bodyHtml += `<div class="form-section-header">Receipt</div>`;
+    if (e.receiptKey) {
+        // Render placeholder, then load the receipt blob async
+        bodyHtml += `<div class="form-section" id="view-receipt-container"><div style="padding: var(--space-m); color: var(--text-secondary); text-align:center">Loading receipt…</div></div>`;
+    } else {
+        bodyHtml += `<div class="form-section"><div style="padding: var(--space-m); color: var(--text-secondary); text-align:center">No receipt attached</div></div>`;
+    }
+
+    bodyHtml += `
+        <div class="form-actions">
+            <button class="delete-btn" onclick="deleteViewedExpense()">Delete expense</button>
+        </div>
+        <div style="text-align:center; font-size:13px; color:var(--text-secondary); padding: var(--space-m) var(--space-l) 0">
+            To change anything, delete this expense and add a new one.
+        </div>
+    `;
+
+    document.getElementById('view-expense-body').innerHTML = bodyHtml;
     showSheet('sheet-view-expense');
 
-    // Load the receipt image if there is one
+    // Load receipt image asynchronously
     if (e.receiptKey) {
-        getReceipt(e.receiptKey).then(record => {
-            const section = document.getElementById('view-receipt-section');
-            if (!section) return;  // sheet closed before load finished
-            if (record && record.blob) {
+        try {
+            const record = await getReceipt(e.receiptKey);
+            const container = document.getElementById('view-receipt-container');
+            if (record && record.blob && container) {
                 const url = URL.createObjectURL(record.blob);
-                section.innerHTML = `<img src="${url}" style="max-width:100%; border-radius: var(--radius-card); display:block">`;
-            } else {
-                section.innerHTML = '<div style="color:var(--text-secondary); text-align:center">Receipt could not be loaded.</div>';
+                container.innerHTML = `
+                    <div style="padding: var(--space-s); text-align:center">
+                        <img src="${url}" style="max-width:100%; max-height:400px; border-radius:var(--radius-card); display:block; margin:0 auto" alt="Receipt">
+                    </div>
+                `;
+            } else if (container) {
+                container.innerHTML = `<div style="padding: var(--space-m); color: var(--text-secondary); text-align:center">Receipt unavailable</div>`;
             }
-        }).catch(err => {
-            console.error('Failed to load receipt:', err);
-        });
+        } catch (err) {
+            console.error('Could not load receipt:', err);
+            const container = document.getElementById('view-receipt-container');
+            if (container) {
+                container.innerHTML = `<div style="padding: var(--space-m); color: var(--text-secondary); text-align:center">Receipt unavailable</div>`;
+            }
+        }
     }
 }
 
@@ -2157,10 +2303,20 @@ async function deleteViewedExpense() {
     renderToday();
 }
 
+// Legacy: row tap handlers in expenseRowHtml still call editExpense.
+// Redirect to the new read-only view.
+function editExpense(id) { viewExpense(id); }
+
+// ===== Save (new expenses only) =====
+let _savingExpense = false;
 async function saveNewExpense() {
+    if (_savingExpense) return;
+    _savingExpense = true;
+
     const amount = parseFloat(document.getElementById('exp-amount').value);
     const merchant = document.getElementById('exp-merchant').value.trim();
     if (!amount || amount <= 0 || !merchant) {
+        _savingExpense = false;
         return alert('Please enter an amount and merchant.');
     }
     const data = {
@@ -2173,15 +2329,18 @@ async function saveNewExpense() {
         payment: document.getElementById('exp-payment').value,
         tripId: document.getElementById('exp-trip').value || null,
         notes: document.getElementById('exp-notes').value.trim(),
-        receiptKey: null,
     };
+
     const saveBtn = document.getElementById('save-primary-btn');
     if (saveBtn) saveBtn.disabled = true;
+
     try {
         if (pendingReceiptBlob) {
             const newKey = uuid();
             await putReceipt(newKey, pendingReceiptBlob);
             data.receiptKey = newKey;
+        } else {
+            data.receiptKey = null;
         }
         store.expenses.push({ id: uuid(), ...data });
         saveStore(store);
@@ -2192,11 +2351,9 @@ async function saveNewExpense() {
         alert('Could not save: ' + err.message);
     } finally {
         if (saveBtn) saveBtn.disabled = false;
+        _savingExpense = false;
     }
 }
-
-// editExpense kept as a stub that redirects to view (read-only)
-function editExpense(id) { viewExpense(id); }
 
 function openTripSheet() {
     populateSelect(document.getElementById('trip-client'), CLIENTS);
