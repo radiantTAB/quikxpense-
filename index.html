@@ -437,6 +437,14 @@ body {
     color: var(--text-primary);
     flex-shrink: 0;
 }
+.form-value {
+    flex: 1;
+    font-size: 17px;
+    color: var(--text-secondary);
+    text-align: right;
+    min-width: 0;
+    word-break: break-word;
+}
 .form-input {
     flex: 1;
     border: none;
@@ -1028,8 +1036,8 @@ body {
 <div class="sheet" id="sheet-new-expense">
     <div class="sheet-header">
         <button class="sheet-btn" onclick="closeSheet()">Cancel</button>
-        <h2 class="sheet-title" id="expense-sheet-title">New Expense</h2>
-        <!-- Save buttons live at the bottom of the form, not in this header -->
+        <h2 class="sheet-title">New Expense</h2>
+        <!-- Save lives at the bottom of the form -->
         <div style="width:52px"></div>
     </div>
     <div class="sheet-body">
@@ -1085,14 +1093,23 @@ body {
         <input type="file" id="receipt-library-input" accept="image/*"
                style="display:none" onchange="handleReceiptFile(event)">
 
-        <!-- Bottom action buttons. The primary save button label changes based on mode. -->
         <div class="form-actions">
-            <button class="save-primary-btn" id="save-primary-btn" onclick="saveExpense()">Save expense</button>
-            <button class="save-as-new-btn" id="save-as-new-btn" onclick="saveExpenseAsNew()" style="display:none">Save as new expense</button>
-            <button class="delete-btn" id="delete-btn" onclick="deleteExpense()" style="display:none">Delete expense</button>
+            <button class="save-primary-btn" id="save-primary-btn" onclick="saveNewExpense()">Save expense</button>
         </div>
 
         <div class="kbd-spacer"></div>
+    </div>
+</div>
+
+<!-- View Expense (read-only details) -->
+<div class="sheet" id="sheet-view-expense">
+    <div class="sheet-header">
+        <button class="sheet-btn" onclick="closeSheet()">Done</button>
+        <h2 class="sheet-title">Expense Details</h2>
+        <div style="width:52px"></div>
+    </div>
+    <div class="sheet-body" id="view-expense-body">
+        <!-- Populated dynamically when opened -->
     </div>
 </div>
 
@@ -2017,19 +2034,17 @@ function closeSheet() {
     }
     currentSheet = null;
     editingExpenseId = null;
-    // Clear sheet-level editing state too
+    // Clear all three editing-state stamps
     const sheetEl = document.getElementById('sheet-new-expense');
     if (sheetEl) sheetEl.dataset.editingId = '';
+    const hiddenInput = document.getElementById('exp-editing-id');
+    if (hiddenInput) hiddenInput.value = '';
     resetReceiptState();
 }
 
-function openExpenseSheet(id) {
-    // Reset any leftover receipt state from a previous open
+function openExpenseSheet() {
+    // New expense only — no editing path.
     resetReceiptState();
-
-    editingExpenseId = id;
-    // Also stamp on the sheet itself so it survives any unrelated state changes
-    document.getElementById('sheet-new-expense').dataset.editingId = id || '';
     populateSelect(document.getElementById('exp-category'), CATEGORIES, c => c.key, c => `${c.icon}  ${c.key}`);
     populateSelect(document.getElementById('exp-payment'), PAYMENT_METHODS);
     const tripSel = document.getElementById('exp-trip');
@@ -2040,91 +2055,112 @@ function openExpenseSheet(id) {
         opt.textContent = t.name;
         tripSel.appendChild(opt);
     }
-
-    if (id) {
-        const e = store.expenses.find(x => x.id === id);
-        document.getElementById('expense-sheet-title').textContent = 'Edit Expense';
-        document.getElementById('exp-amount').value = e.amount.toFixed(2);
-        document.getElementById('exp-merchant').value = e.merchant;
-        document.getElementById('exp-date').value = isoToDateInput(e.date);
-        document.getElementById('exp-category').value = e.category;
-        document.getElementById('exp-payment').value = e.payment;
-        document.getElementById('exp-trip').value = e.tripId || '';
-        document.getElementById('exp-notes').value = e.notes || '';
-        // In edit mode: show all three buttons. Primary button = "Save edit of current expense".
-        document.getElementById('save-primary-btn').textContent = 'Save edit of current expense';
-        document.getElementById('save-as-new-btn').style.display = 'block';
-        document.getElementById('delete-btn').style.display = 'block';
-        // Load existing receipt blob if any
-        if (e.receiptKey) {
-            loadExistingReceiptForEditing(e.receiptKey);
-        } else {
-            renderReceiptSection();
-        }
-    } else {
-        document.getElementById('expense-sheet-title').textContent = 'New Expense';
-        document.getElementById('exp-amount').value = '';
-        document.getElementById('exp-merchant').value = '';
-        document.getElementById('exp-date').value = isoToDateInput(new Date().toISOString());
-        document.getElementById('exp-category').value = 'Other';
-        document.getElementById('exp-payment').value = 'Radiant Card';
-        document.getElementById('exp-trip').value = '';
-        document.getElementById('exp-notes').value = '';
-        // In create mode: just one button to save.
-        document.getElementById('save-primary-btn').textContent = 'Save expense';
-        document.getElementById('save-as-new-btn').style.display = 'none';
-        document.getElementById('delete-btn').style.display = 'none';
-        renderReceiptSection();
-    }
+    document.getElementById('exp-amount').value = '';
+    document.getElementById('exp-merchant').value = '';
+    document.getElementById('exp-date').value = isoToDateInput(new Date().toISOString());
+    document.getElementById('exp-category').value = 'Other';
+    document.getElementById('exp-payment').value = 'Radiant Card';
+    document.getElementById('exp-trip').value = '';
+    document.getElementById('exp-notes').value = '';
+    renderReceiptSection();
     showSheet('sheet-new-expense');
     setTimeout(() => document.getElementById('exp-amount').focus(), 350);
 }
 
-// When editing an expense that already has a saved receipt, fetch the
-// blob from IndexedDB and stage it as the "pending" receipt so the UI
-// shows it. If the user makes no changes, save() will leave the receipt
-// key intact rather than re-saving the same blob.
-async function loadExistingReceiptForEditing(key) {
-    const record = await getReceipt(key);
-    if (record && record.blob) {
-        pendingReceiptBlob = record.blob;
-        pendingReceiptObjectURL = URL.createObjectURL(record.blob);
+// View an existing expense in read-only mode. Tapping a row calls this.
+// To "edit" an expense, the user deletes it and creates a new one.
+let viewingExpenseId = null;
+function viewExpense(id) {
+    const e = store.expenses.find(x => x.id === id);
+    if (!e) return;
+    viewingExpenseId = id;
+    const cat = findCategory(e.category);
+    const tripName = e.tripId ? (store.trips.find(t => t.id === e.tripId)?.name || '—') : '—';
+    const dateStr = new Date(e.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+
+    const body = document.getElementById('view-expense-body');
+    body.innerHTML = `
+        <div class="form-section" style="padding-top: var(--space-l); padding-bottom: var(--space-l); text-align:center">
+            <div style="font-size: 13px; color: var(--text-secondary); letter-spacing: 0.5px; text-transform: uppercase">
+                ${cat.icon} ${escapeHtml(cat.key)}
+            </div>
+            <div style="font-size: 44px; font-weight: 700; color: var(--text-primary); margin-top: var(--space-s)">
+                ${fmt(e.amount)}
+            </div>
+            <div style="font-size: 17px; font-weight: 600; color: var(--text-primary); margin-top: var(--space-xs)">
+                ${escapeHtml(e.merchant || '(no merchant)')}
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-top: 2px">
+                ${dateStr}
+            </div>
+        </div>
+
+        <div class="form-section-header">Details</div>
+        <div class="form-section">
+            <div class="form-row"><label class="form-label">Payment</label><div class="form-value">${escapeHtml(e.payment || '—')}</div></div>
+            <div class="form-row"><label class="form-label">Trip</label><div class="form-value">${escapeHtml(tripName)}</div></div>
+        </div>
+
+        ${e.notes ? `
+            <div class="form-section-header">Notes</div>
+            <div class="form-section">
+                <div class="form-row" style="padding: var(--space-m); display:block">
+                    <div class="form-value" style="white-space:pre-wrap; text-align:left">${escapeHtml(e.notes)}</div>
+                </div>
+            </div>
+        ` : ''}
+
+        <div class="form-section-header">Receipt</div>
+        <div class="form-section" id="view-receipt-section" style="padding: var(--space-m)">
+            ${e.receiptKey ? '<div style="color:var(--text-secondary); text-align:center">Loading…</div>' : '<div style="color:var(--text-secondary); text-align:center; padding: var(--space-l) 0">No receipt attached</div>'}
+        </div>
+
+        <div class="form-actions">
+            <button class="delete-btn" onclick="deleteViewedExpense()">Delete expense</button>
+            <div style="text-align:center; font-size:12px; color:var(--text-secondary); margin-top: var(--space-s); padding: 0 var(--space-l)">
+                To change anything, delete this expense and add a new one.
+            </div>
+        </div>
+
+        <div class="kbd-spacer"></div>
+    `;
+    showSheet('sheet-view-expense');
+
+    // Load the receipt image if there is one
+    if (e.receiptKey) {
+        getReceipt(e.receiptKey).then(record => {
+            const section = document.getElementById('view-receipt-section');
+            if (!section) return;  // sheet closed before load finished
+            if (record && record.blob) {
+                const url = URL.createObjectURL(record.blob);
+                section.innerHTML = `<img src="${url}" style="max-width:100%; border-radius: var(--radius-card); display:block">`;
+            } else {
+                section.innerHTML = '<div style="color:var(--text-secondary); text-align:center">Receipt could not be loaded.</div>';
+            }
+        }).catch(err => {
+            console.error('Failed to load receipt:', err);
+        });
     }
-    renderReceiptSection();
 }
 
-function editExpense(id) { openExpenseSheet(id); }
-
-let _savingExpense = false;
-async function saveExpense(forceNew) {
-    // Reentrancy guard: prevent double-fire from rapid taps or iOS ghost clicks
-    if (_savingExpense) {
-        console.warn('saveExpense: reentrancy guard hit, ignoring second call');
-        return;
+async function deleteViewedExpense() {
+    if (!viewingExpenseId) return;
+    if (!confirm('Delete this expense? This cannot be undone.')) return;
+    const e = store.expenses.find(x => x.id === viewingExpenseId);
+    if (e && e.receiptKey) {
+        try { await deleteReceipt(e.receiptKey); } catch (_) {}
     }
-    _savingExpense = true;
-    // Re-read the editing ID from the form sheet itself so we can't lose it
-    // due to unrelated state mutations between open and save.
-    const sheetEl = document.getElementById('sheet-new-expense');
-    const sheetEditingId = sheetEl.dataset.editingId || null;
-    // Also cross-check the global, just to belt-and-suspender
-    const effectiveEditingId = sheetEditingId || editingExpenseId || null;
-    // forceNew=true means "Save as new" — treat this as a brand-new expense
-    // even though the form has an editing context.
-    const isUpdate = !forceNew && !!effectiveEditingId;
+    store.expenses = store.expenses.filter(x => x.id !== viewingExpenseId);
+    saveStore(store);
+    viewingExpenseId = null;
+    closeSheet();
+    renderToday();
+}
 
-    console.log('saveExpense:', {
-        forceNew: !!forceNew,
-        sheetEditingId,
-        globalEditingId: editingExpenseId,
-        effectiveEditingId,
-        isUpdate,
-    });
-
+async function saveNewExpense() {
     const amount = parseFloat(document.getElementById('exp-amount').value);
     const merchant = document.getElementById('exp-merchant').value.trim();
     if (!amount || amount <= 0 || !merchant) {
-        _savingExpense = false;
         return alert('Please enter an amount and merchant.');
     }
     const data = {
@@ -2137,77 +2173,17 @@ async function saveExpense(forceNew) {
         payment: document.getElementById('exp-payment').value,
         tripId: document.getElementById('exp-trip').value || null,
         notes: document.getElementById('exp-notes').value.trim(),
+        receiptKey: null,
     };
-
-    // Disable Save button to prevent double-submit while we await IDB
     const saveBtn = document.getElementById('save-primary-btn');
     if (saveBtn) saveBtn.disabled = true;
-
     try {
-        // ---- Decide what to do with the receipt -----------------
-        const existingExpense = isUpdate
-            ? store.expenses.find(e => e.id === effectiveEditingId)
-            : null;
-        const existingKey = existingExpense ? existingExpense.receiptKey : null;
-
-        if (forceNew && pendingReceiptBlob) {
-            // Save as new with a receipt: always make a fresh copy of the blob
-            // so the new expense gets its own IDB entry (don't share keys).
+        if (pendingReceiptBlob) {
             const newKey = uuid();
             await putReceipt(newKey, pendingReceiptBlob);
             data.receiptKey = newKey;
-        } else if (pendingReceiptDeleteKey && !pendingReceiptBlob) {
-            // User removed the receipt
-            await deleteReceipt(pendingReceiptDeleteKey);
-            data.receiptKey = null;
-        } else if (pendingReceiptBlob && (!existingKey || pendingReceiptDeleteKey)) {
-            // New blob attached or explicit replace
-            const newKey = uuid();
-            await putReceipt(newKey, pendingReceiptBlob);
-            if (pendingReceiptDeleteKey) {
-                await deleteReceipt(pendingReceiptDeleteKey);
-            }
-            data.receiptKey = newKey;
-        } else if (existingKey && !forceNew) {
-            // Existing receipt, no change — carry the key over (only for update path)
-            data.receiptKey = existingKey;
-        } else {
-            data.receiptKey = null;
         }
-
-        if (isUpdate) {
-            const idx = store.expenses.findIndex(e => e.id === effectiveEditingId);
-            if (idx >= 0) {
-                store.expenses[idx] = { ...store.expenses[idx], ...data };
-            } else {
-                console.error('saveExpense: editing ID', effectiveEditingId, 'not found in store. Aborting save.');
-                alert('Could not find the expense to update. It may have been deleted in another window.');
-                if (saveBtn) saveBtn.disabled = false;
-                _savingExpense = false;
-                return;
-            }
-        } else {
-            // Safety net: if this push would create a near-duplicate of an
-            // existing expense (same merchant + amount + date) AND the user
-            // didn't explicitly choose "Save as new", refuse to add it.
-            // This guards against any ghost-click / double-tap scenarios where
-            // the editing context got lost between open and save.
-            if (!forceNew) {
-                const duplicate = store.expenses.find(e =>
-                    e.merchant === data.merchant &&
-                    Math.abs(e.amount - data.amount) < 0.005 &&
-                    e.date.split('T')[0] === data.date.split('T')[0]
-                );
-                if (duplicate) {
-                    console.warn('saveExpense: refused to create duplicate of', duplicate.id);
-                    alert('This looks like a duplicate of an existing expense. If you meant to create a copy, use "Save as new expense".');
-                    if (saveBtn) saveBtn.disabled = false;
-                    _savingExpense = false;
-                    return;
-                }
-            }
-            store.expenses.push({ id: uuid(), ...data });
-        }
+        store.expenses.push({ id: uuid(), ...data });
         saveStore(store);
         closeSheet();
         renderToday();
@@ -2216,28 +2192,11 @@ async function saveExpense(forceNew) {
         alert('Could not save: ' + err.message);
     } finally {
         if (saveBtn) saveBtn.disabled = false;
-        _savingExpense = false;
     }
 }
 
-async function saveExpenseAsNew() {
-    // Confirm to make sure the user understands this creates a duplicate
-    if (!confirm('Save as a NEW expense? The original will stay unchanged.')) return;
-    await saveExpense(true);
-}
-
-async function deleteExpense() {
-    if (!editingExpenseId) return;
-    if (!confirm('Delete this expense?')) return;
-    const e = store.expenses.find(x => x.id === editingExpenseId);
-    if (e && e.receiptKey) {
-        try { await deleteReceipt(e.receiptKey); } catch (_) {}
-    }
-    store.expenses = store.expenses.filter(e => e.id !== editingExpenseId);
-    saveStore(store);
-    closeSheet();
-    renderToday();
-}
+// editExpense kept as a stub that redirects to view (read-only)
+function editExpense(id) { viewExpense(id); }
 
 function openTripSheet() {
     populateSelect(document.getElementById('trip-client'), CLIENTS);
